@@ -1,6 +1,6 @@
 // Service Worker: legt die App auf dem Gerät ab, damit sie auch offline startet.
 // Bei einer neuen Version der App die Zahl hier erhöhen (v1 -> v2).
-const CACHE = 'bilder-editor-v1';
+const CACHE = 'bilder-editor-v2';
 const ASSETS = [
   './',
   './index.html',

@@ -143,6 +143,10 @@
     border-top: 1px solid var(--border);
   }
   .bar button { flex: 1; }
+  .background-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .background-actions button { flex: 1 1 42%; min-width: 0; padding: 0 8px; font-size: 13px; }
+  .progress-note { color: var(--text-dim); font-size: 12px; text-align: center; }
+  .progress-note:empty { display: none; }
 
   input[type="file"] { display: none; }
 </style>
@@ -172,6 +176,12 @@
     <span>Rahmen auf dem Bild aufziehen</span>
     <button id="cropCancel" class="danger">Abbrechen</button>
   </div>
+  <div class="background-actions" id="backgroundActions" hidden>
+    <button id="removePhotoBgBtn" hidden>Foto freistellen</button>
+    <button id="removeBackgroundBtn">Hintergrund freistellen</button>
+    <button id="restoreBgBtn" hidden>Original zurück</button>
+  </div>
+  <div class="progress-note" id="removeProgress" aria-live="polite"></div>
 
   <div id="editPanel" hidden>
     <div class="tabs" id="tabs"></div>
@@ -209,7 +219,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   const canvas = $('canvas');
-  const ctx = canvas.getContext('2d', { alpha: false });
+  const ctx = canvas.getContext('2d', { alpha: true });
   const stage = $('stage'), emptyHint = $('emptyHint'), toastEl = $('toast');
   const chips = $('itemList'), panel = $('panel'), editPanel = $('editPanel'), cropBar = $('cropBar');
   const tabsEl = $('tabs'), textRow = $('textRow'), sliderRow = $('sliderRow');
@@ -219,7 +229,9 @@
     undo: $('undoBtn'), redo: $('redoBtn'), clear: $('clearBtn'), save: $('saveBtn'),
     loadBg: $('loadBgBtn'), addImg: $('addImgBtn'), addText: $('addTextBtn'),
     layerUp: $('layerUp'), layerDown: $('layerDown'), dup: $('dupBtn'),
-    crop: $('cropBtn'), del: $('deleteBtn'), cropCancel: $('cropCancel')
+    crop: $('cropBtn'), del: $('deleteBtn'), cropCancel: $('cropCancel'),
+    removePhotoBg: $('removePhotoBgBtn'), removeBackground: $('removeBackgroundBtn'),
+    restoreBg: $('restoreBgBtn')
   };
 
   const DPR = Math.min(window.devicePixelRatio || 1, 3);
@@ -229,7 +241,8 @@
   const BG_MAX = 4096, OVERLAY_MAX = 2048;   // iOS-Canvas-Limit beachten
   const HANDLE = 12 * DPR, HIT = 24 * DPR;
 
-  let bgImage = null, bgFileName = 'bild.jpg';
+  let bgImage = null, bgOriginalImage = null, bgFileName = 'bild.jpg', bgTransparent = false;
+  let removeBackgroundModule = null, isRemovingBackground = false;
   let items = [], selected = -1, displayScale = 1;
   let activeTab = 'size';
   let isDrag = false, isResize = false, isCrop = false, cropMode = false, moved = false;
@@ -327,8 +340,17 @@
   }
   window.addEventListener('orientationchange', () => setTimeout(() => { fitCanvas(); scheduleDraw(); }, 250));
 
+  function copyCanvas(source) {
+    const c = document.createElement('canvas');
+    c.width = source.width; c.height = source.height;
+    c.getContext('2d').drawImage(source, 0, 0);
+    return c;
+  }
+
   function setBackground(img, name) {
     bgImage = img;
+    bgOriginalImage = copyCanvas(img);
+    bgTransparent = false;
     bgFileName = name || 'bild.jpg';
     items = []; selected = -1;
     history = []; historyIndex = -1;
@@ -337,6 +359,9 @@
     emptyHint.style.display = 'none';
     canvas.style.display = 'block';
     btn.save.disabled = false;
+    $('backgroundActions').hidden = false;
+    btn.restoreBg.hidden = true;
+    $('removeProgress').textContent = '';
     fitCanvas();
     updateList();
     scheduleDraw();
@@ -411,8 +436,19 @@
 
   function draw() {
     if (!bgImage) return;
-    ctx.fillStyle = '#161618';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (bgTransparent) {
+      const tile = 12 * DPR;
+      for (let y = 0; y < canvas.height; y += tile) {
+        for (let x = 0; x < canvas.width; x += tile) {
+          ctx.fillStyle = ((Math.floor(x / tile) + Math.floor(y / tile)) % 2) ? '#d4d4d8' : '#ffffff';
+          ctx.fillRect(x, y, tile, tile);
+        }
+      }
+    } else {
+      ctx.fillStyle = '#161618';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
 
     for (let i = 0; i < items.length; i++) {
@@ -519,9 +555,17 @@
 
   function renderPanel() {
     const has = selected >= 0 && !cropMode;
+    const hasBackground = !!bgImage;
+    const selectedPhoto = has && !isText(items[selected]);
     cropBar.hidden = !cropMode;
     editPanel.hidden = !has;
-    panel.hidden = !(has || cropMode);
+    $('backgroundActions').hidden = !hasBackground || cropMode;
+    $('removePhotoBgBtn').hidden = !selectedPhoto;
+    btn.removePhotoBg.disabled = isRemovingBackground;
+    btn.removeBackground.disabled = isRemovingBackground || bgTransparent;
+    btn.restoreBg.hidden = !bgTransparent || !bgOriginalImage;
+    $('removeProgress').hidden = !hasBackground || cropMode;
+    panel.hidden = !(has || cropMode || hasBackground);
     if (!has) return;
 
     const it = items[selected];
@@ -621,7 +665,9 @@
     if (!bgImage && !items.length) return;
     if (!confirm('Alles entfernen, auch den Hintergrund?\n\nDas kann nicht rückgängig gemacht werden.')) return;
     exitCrop();
-    bgImage = null; bgFileName = 'bild.jpg';
+    bgImage = null; bgOriginalImage = null; bgTransparent = false; bgFileName = 'bild.jpg';
+    $('backgroundActions').hidden = true;
+    $('removeProgress').textContent = '';
     items = []; selected = -1;
     history = []; historyIndex = -1;
     updateHistoryButtons();
@@ -832,6 +878,108 @@
   ['gesturestart', 'gesturechange', 'gestureend'].forEach(ev =>
     document.addEventListener(ev, e => e.preventDefault()));
 
+  // ===== Hintergrund lokal auf dem Gerät entfernen =====
+  // Die Fotos werden an removeBackground() als lokale Blob-Daten übergeben.
+  // Beim ersten Aufruf werden Bibliothek und Modell aus dem Internet geladen;
+  // die Bilddaten selbst werden nicht an einen externen Dienst gesendet.
+  async function getBackgroundRemoval() {
+    if (!removeBackgroundModule) {
+      $('removeProgress').textContent = 'Freistellungsmodell wird geladen…';
+      removeBackgroundModule = await import('https://esm.sh/@imgly/background-removal@1.5.5?bundle');
+    }
+    return removeBackgroundModule.removeBackground;
+  }
+
+  async function canvasToPngBlob(source) {
+    return new Promise((resolve, reject) => {
+      source.toBlob(blob => blob ? resolve(blob) : reject(new Error('Foto konnte nicht vorbereitet werden.')), 'image/png');
+    });
+  }
+
+  async function loadResultCanvas(blob) {
+    const url = URL.createObjectURL(blob);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('Das freigestellte Bild konnte nicht geladen werden.'));
+        image.src = url;
+      });
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      return c;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function removeBackgroundFrom(isOverlay) {
+    if (!bgImage || isRemovingBackground) return;
+    if (isOverlay && (selected < 0 || isText(items[selected]))) return;
+    if (!isOverlay && bgTransparent) { toast('Der Hintergrund ist bereits transparent.'); return; }
+
+    const target = isOverlay ? items[selected].img : bgImage;
+    const targetIndex = selected;
+    isRemovingBackground = true;
+    btn.removePhotoBg.disabled = true;
+    btn.removeBackground.disabled = true;
+    $('removeProgress').hidden = false;
+    $('removeProgress').textContent = 'Foto wird auf diesem Gerät verarbeitet…';
+    renderPanel();
+
+    try {
+      const removeBackground = await getBackgroundRemoval();
+      const input = await canvasToPngBlob(target);
+      const result = await removeBackground(input, {
+        model: 'isnet_fp16',
+        output: { format: 'image/png' },
+        progress: (_key, current, total) => {
+          if (total > 0) {
+            $('removeProgress').textContent = 'Freistellen… ' + Math.round(current / total * 100) + ' %';
+          }
+        }
+      });
+      const transparentCanvas = await loadResultCanvas(result);
+
+      if (isOverlay) {
+        // Ein Verlaufseintrag vor und einer nach der Änderung erlaubt Undo/Redo.
+        pushHistory();
+        items[targetIndex].img = transparentCanvas;
+        items[targetIndex].name = (items[targetIndex].name || 'Foto').replace(/\.[^.]+$/, '') + ' (freigestellt)';
+        selected = targetIndex;
+        pushHistory();
+        updateList();
+      } else {
+        bgImage = transparentCanvas;
+        bgTransparent = true;
+        fitCanvas();
+      }
+      $('removeProgress').textContent = '';
+      scheduleDraw();
+      toast('Hintergrund entfernt');
+    } catch (err) {
+      console.error(err);
+      $('removeProgress').textContent = '';
+      toast('Freistellen fehlgeschlagen. Bitte Internetverbindung prüfen und erneut versuchen.', 4500);
+    } finally {
+      isRemovingBackground = false;
+      renderPanel();
+    }
+  }
+
+  btn.removePhotoBg.onclick = () => removeBackgroundFrom(true);
+  btn.removeBackground.onclick = () => removeBackgroundFrom(false);
+  btn.restoreBg.onclick = () => {
+    if (!bgOriginalImage || isRemovingBackground) return;
+    bgImage = copyCanvas(bgOriginalImage);
+    bgTransparent = false;
+    fitCanvas();
+    scheduleDraw();
+    renderPanel();
+    toast('Original-Hintergrund wiederhergestellt');
+  };
+
   // ===== Export / Teilen =====
   function createExport(isJpeg) {
     const c = document.createElement('canvas');
@@ -864,7 +1012,7 @@
     btn.save.disabled = true;
     toast('Bild wird erstellt…', 0);
     try {
-      const isJpeg = !/\.png$/i.test(bgFileName);
+      const isJpeg = !bgTransparent && !/\.png$/i.test(bgFileName);
       const base = bgFileName.replace(/\.[^.]+$/, '') || 'bild';
       const name = base + '-bearbeitet.' + (isJpeg ? 'jpg' : 'png');
       const blob = await toBlob(createExport(isJpeg), isJpeg);
